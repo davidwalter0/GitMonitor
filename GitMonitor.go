@@ -15,8 +15,7 @@ Find a way to get commit message? -> DONE
 	Need to figure out why it crashes/panics after any more than 3 iterations -> DONE
 	Note to self: Can access commit data and IFF it's for your account and repo, else not allowed + crashes
 Find a way to read the list of events so they print in chronological order -> DONE
-Abstract --> DONE
-
+Abstract repo and user functions --> DONE
 
 */
 
@@ -56,7 +55,7 @@ func getGitHubEvent(cur github.Event) GitHubEvent {
 	//authorMap := commitMap["author"].(map[string]interface{})
 	//fmt.Println(authorMap)
 	//authorName := authorMap["name"].(string) // Typecast interface{} to string
-	return GitHubEvent{"authorName", *cur.Actor.Login, *cur.Type, *cur.Repo.Name, *cur.ID, *cur.Public, "commitMessage"}
+	return GitHubEvent{"stubAuthorName", *cur.Actor.Login, *cur.Type, *cur.Repo.Name, *cur.ID, *cur.Public, "stubCommitMessage"}
 }
 
 // Listen for events on a particular repo, updates every minsToWait mins
@@ -65,7 +64,7 @@ func ListenForEvents(owner, repo string, ch chan<- GitHubEvent) {
 		&oauth2.Token{AccessToken: ""}) // Insert your personal access token here
 	tc := oauth2.NewClient(oauth2.NoContext, ts)
 	client := github.NewClient(tc)
-	var prev GitHubEvent
+	var prev GitHubEvent // Represents the most recent previously seen event
 	for {
 		events, _, _ := client.Activity.ListEventsPerformedByUser(owner, false, nil) // Default to monitoring user events
 		if repo != "" {                                                              // If repo is not nil, monitory repo events instead
@@ -73,18 +72,18 @@ func ListenForEvents(owner, repo string, ch chan<- GitHubEvent) {
 		}
 
 		first := getGitHubEvent(events[0])
-		if first != prev {
-			mostRec := first
-			toSendToChan := make([]GitHubEvent, 0) // Add all events to a slice
-			for _, val := range events {
+		if first != prev { // If we haven't seen the event before
+			mostRec := first                       // Save the first-most event
+			toSendToChan := make([]GitHubEvent, 0) // Create a slice with which to hold new events
+			for _, val := range events {           // Iterate through every event in the list until we arrive at one we've seen before
 				cur := getGitHubEvent(val)
 				if cur == prev {
 					break
 				}
-				toSendToChan = append(toSendToChan, cur)
+				toSendToChan = append(toSendToChan, cur) // If it's new, add it to the slice
 			}
 			for i, _ := range toSendToChan {
-				ch <- toSendToChan[len(toSendToChan)-i-1] // Sends items to channel in reverse order so new events appear chronologically at the bottom
+				ch <- toSendToChan[len(toSendToChan)-i-1] // Sends items to channel in reverse order so new events appear chronologically in the terminal
 			}
 			prev = mostRec // Update prev to the most recently encountered item on the list
 		}
@@ -94,16 +93,23 @@ func ListenForEvents(owner, repo string, ch chan<- GitHubEvent) {
 }
 
 // Prints every GitHubEvent received through the channel
-func PrintEvents(ch <-chan GitHubEvent) {
+func PrintEvents(ch <-chan GitHubEvent, userActivityMap map[string]int) {
 	for {
-		cur := <-ch
-		fmt.Println(cur)
+		received := <-ch
+		_, ok := userActivityMap[received.Username]
+		if ok {
+			userActivityMap[received.Username] += 1
+		} else {
+			userActivityMap[received.Username] = 1
+		}
+		fmt.Println(received)
 	}
 }
 
 func main() {
 	toPrint := make(chan GitHubEvent)
-	go PrintEvents(toPrint)
+	activityMap := make(map[string]int)
+	go PrintEvents(toPrint, activityMap)
 
 	for {
 		fmt.Println("Would you like to monitor a user or a repo? Please enter 1 for user, 2 for repo or 3 to exit")
@@ -128,6 +134,6 @@ func main() {
 			fmt.Println("You entered something else, please try again")
 		}
 	}
-
+	fmt.Println("The commit/event count for each user is as follows:\n", activityMap)
 	fmt.Println("Exiting")
 }
