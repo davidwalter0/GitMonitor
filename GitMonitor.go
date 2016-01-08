@@ -12,7 +12,7 @@ import (
 TODO
 Testing?
 Find a way to get commit message?
-Find a way to read the list of events so they print in chronological order
+Find a way to read the list of events so they print in chronological order -> DONE
 Abstract --> DONE
 
 
@@ -48,18 +48,21 @@ func ListenForEvents(owner, repo string, ch chan<- GitHubEvent) {
 	for {
 		events, _, _ := client.Activity.ListEventsPerformedByUser(owner, false, nil)
 		if repo != "" {
-			//	events, _, _ := client.Activity.ListRepositoryEvents(owner, repo, nil)
+			events, _, _ = client.Activity.ListRepositoryEvents(owner, repo, nil)
 		}
 		cur := getGitHubEvent(events[0])
-		fmt.Println(cur)
 		if cur != prev {
 			mostRec := cur
+			toSendToChan := make([]GitHubEvent, 0) // Add all events to a slice to demonstrate that events appear in chronological order from oldest to newest
 			for _, v := range events {
 				rn := getGitHubEvent(v)
 				if rn == prev {
 					break
 				}
-				ch <- rn
+				toSendToChan = append(toSendToChan, rn)
+			}
+			for i, _ := range toSendToChan {
+				ch <- toSendToChan[len(toSendToChan)-i-1] // Sends item in reverse order so they appear chronologically
 			}
 			prev = mostRec // Update prev to the most recently encountered item on the list
 
@@ -79,33 +82,29 @@ func PrintEvents(ch <-chan GitHubEvent) {
 func main() {
 	toPrint := make(chan GitHubEvent)
 	go PrintEvents(toPrint)
-	go ListenForEvents("ElTav", "", toPrint)
-	/*
-		for {
-			fmt.Println("Would you like to monitor a user or a repo? Please enter 1 for user, 2 for repo or 3 to exit")
-			var input int
-			fmt.Scanln(&input)
-			if input == 1 {
-				var user string
-				fmt.Println("Please enter their github username")
-				fmt.Scanln(&user)
-				go ListenForEvents(user, "", toPrint)
-			} else if input == 2 {
-				var owner string
-				fmt.Println("Please enter the github username of the owner of the repo")
-				fmt.Scanln(&owner)
-				var repoName string
-				fmt.Println("Please enter the name of the repo")
-				fmt.Scanln(&repoName)
-				go ListenForEvents(owner, repoName, toPrint)
-			} else if input == 3 {
-				break
-			} else {
-				fmt.Println("You entered something else, please try again")
-			}
-		}*/
-	var user string
-	fmt.Println("Please enter their github username")
-	fmt.Scanln(&user)
+	for {
+		fmt.Println("Would you like to monitor a user or a repo? Please enter 1 for user, 2 for repo or 3 to exit")
+		var input int
+		fmt.Scanln(&input)
+		if input == 1 {
+			var user string
+			fmt.Println("Please enter their github username")
+			fmt.Scanln(&user)
+			go ListenForEvents(user, "", toPrint)
+		} else if input == 2 {
+			var owner string
+			fmt.Println("Please enter the github username of the owner of the repo")
+			fmt.Scanln(&owner)
+			var repoName string
+			fmt.Println("Please enter the name of the repo")
+			fmt.Scanln(&repoName)
+			go ListenForEvents(owner, repoName, toPrint)
+		} else if input == 3 {
+			break
+		} else {
+			fmt.Println("You entered something else, please try again")
+		}
+	}
+
 	fmt.Println("Exiting")
 }
