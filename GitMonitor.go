@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,84 +12,87 @@ import (
 /*
 TODO
 Testing?
-Find a way to get commit message? -> DONE
-	Need to figure out why it crashes/panics after any more than 3 iterations -> DONE
-	Note to self: Can access commit data and IFF it's for your account and repo, else not allowed + crashes
-Find a way to read the list of events so they print in chronological order -> DONE
-Abstract repo and user functions --> DONE
-
 */
 
 const minsToWait int = 1 // Number of minutes to wait between each update
 
 // A structure to keep track of relevant data
 type GitHubEvent struct {
-	Name     string
 	Username string
 	Type     string
 	Repo     string
 	EventID  string
 	Public   bool
-	Message  string
+	Day      int
+	Month    time.Month
+	Year     int
 }
 
-// Overload the String() function to present the data in an easy-to-parse manner
+// Overload the String() function to present gitHubEvents in an easy-to-parse manner
 func (g GitHubEvent) String() string {
-	return fmt.Sprintf("- %v commmited a %v on the repo %q and ID %q (public: %v)", g.Username, g.Type, g.Repo, g.EventID, g.Public)
+	return fmt.Sprintf("- %v commmited a %v on the repo %q on %v %v, %v with ID %q (public: %v)", g.Username, g.Type, g.Repo, g.Month, g.Day, g.Year, g.EventID, g.Public)
 }
 
 // Returns a GitHubEvent struct from the go-github github.Event struct
 func getGitHubEvent(cur github.Event) GitHubEvent {
-	/*v Note: For below data, see note in todo section
-	ar data map[string]interface{}                                // Declare a map to parse the json
-	if err := json.Unmarshal(*cur.RawPayload, &data); err != nil { // Unmarshal the JSON
-		panic(err)
-	}
-	commitArray := data["commits"].([]interface{})       // Cast the "commit" entry of the map to an array
-	commitMap := commitArray[0].(map[string]interface{}) // Grab the first element of the array, cast it to a map[string]interface{} representing the commit information
-	fmt.Println(commitMap)
-	/*
-		Other fields in commitmap besides "message" include: "distinct", url", "sha", "author" (returns a map with fields "email" and "name") )
-	*/
-	//commitMessage := commitMap["message"].(string) // Typecast interface{} to string
-	//fmt.Println(commitMessage)
-	//authorMap := commitMap["author"].(map[string]interface{})
-	//fmt.Println(authorMap)
-	//authorName := authorMap["name"].(string) // Typecast interface{} to string
-	return GitHubEvent{"stubAuthorName", *cur.Actor.Login, *cur.Type, *cur.Repo.Name, *cur.ID, *cur.Public, "stubCommitMessage"}
+	return GitHubEvent{*cur.Actor.Login, *cur.Type, *cur.Repo.Name, *cur.ID, *cur.Public, cur.CreatedAt.Day(), cur.CreatedAt.Month(), cur.CreatedAt.Year()}
 }
 
-// Listen for events on a particular repo, updates every minsToWait mins
-func ListenForEvents(owner, repo string, ch chan<- GitHubEvent) {
-	ts := oauth2.StaticTokenSource( // Set up client
+// Listen for events either by owner or repository and prints new activity to standard out, updates every minsToWait mins
+func ListenForEvents(owner, repo string, ch chan<- GitHubEvent, errorChannel chan<- error) {
+	// Set up the go-github client and authenticate
+	ts := oauth2.StaticTokenSource(
 		&oauth2.Token{AccessToken: ""}) // Insert your personal access token here
 	tc := oauth2.NewClient(oauth2.NoContext, ts)
 	client := github.NewClient(tc)
-	var prev GitHubEvent // Represents the most recent previously seen event
+	_, gitResponse, err := client.APIMeta()
+	if err != nil {
+		errorChannel <- err
+		return
+	}
+	// Check for status
+	if gitResponse.Remaining == 0 {
+		errorChannel <- errors.New("No API calls remaining")
+		return
+	}
+	// Represents the most recent previously seen event
+	var previousEvent GitHubEvent
 	for {
-		events, _, _ := client.Activity.ListEventsPerformedByUser(owner, false, nil) // Default to monitoring user events
-		if repo != "" {                                                              // If repo is not nil, monitory repo events instead
-			events, _, _ = client.Activity.ListRepositoryEvents(owner, repo, nil)
+		// Default to monitoring user events & check to ensure that the user has entered both the username and/or repository name correctly
+		// Move out to a function
+		events, _, err := client.Activity.ListEventsPerformedByUser(owner, false, nil)
+		if err != nil {
+			errorChannel <- err
+			break
 		}
-
+		if repo != "" {
+			events, _, err = client.Activity.ListRepositoryEvents(owner, repo, nil)
+			if err != nil {
+				errorChannel <- err
+				break
+			}
+		}
 		first := getGitHubEvent(events[0])
-		if first != prev { // If we haven't seen the event before
-			mostRec := first                       // Save the first-most event
-			toSendToChan := make([]GitHubEvent, 0) // Create a slice with which to hold new events
-			for _, val := range events {           // Iterate through every event in the list until we arrive at one we've seen before
+		if first != previousEvent {
+			mostRecentlySeen := first
+			toSendToChan := make([]GitHubEvent, 0)
+			for _, val := range events {
 				cur := getGitHubEvent(val)
-				if cur == prev {
+				if cur == previousEvent {
 					break
 				}
-				toSendToChan = append(toSendToChan, cur) // If it's new, add it to the slice
+				// If it's new, add it to the slice
+				toSendToChan = append(toSendToChan, cur)
 			}
-			for i, _ := range toSendToChan {
-				ch <- toSendToChan[len(toSendToChan)-i-1] // Sends items to channel in reverse order so new events appear chronologically in the terminal
+			// todo: could potentially rephrase syntax to use a more traditional for loop
+			for i := range toSendToChan {
+				// Sends items to channel in reverse order so new events are printed chronologically
+				ch <- toSendToChan[len(toSendToChan)-i-1]
 			}
-			prev = mostRec // Update prev to the most recently encountered item on the list
+			previousEvent = mostRecentlySeen
 		}
 
-		time.Sleep(time.Minute * time.Duration(minsToWait)) // Sleep for minsToWait mins
+		time.Sleep(time.Minute * time.Duration(minsToWait))
 	}
 }
 
@@ -96,44 +100,53 @@ func ListenForEvents(owner, repo string, ch chan<- GitHubEvent) {
 func PrintEvents(ch <-chan GitHubEvent, userActivityMap map[string]int) {
 	for {
 		received := <-ch
-		_, ok := userActivityMap[received.Username]
-		if ok {
-			userActivityMap[received.Username] += 1
-		} else {
-			userActivityMap[received.Username] = 1
-		}
+		userActivityMap[received.Username]++
 		fmt.Println(received)
+	}
+}
+
+// Listens for errors sent through the channel signaling that something went wrong with the API call
+func ListenForErrors(ch <-chan error) {
+	for {
+		receivedError := <-ch
+		fmt.Printf("An error occurred, it was: %q\n", receivedError)
 	}
 }
 
 func main() {
 	toPrint := make(chan GitHubEvent)
-	activityMap := make(map[string]int)
+	catchErrors := make(chan error)
+	activityMap := make(map[string]int) // Some prefer curly brace initialization
 	go PrintEvents(toPrint, activityMap)
-
+	go ListenForErrors(catchErrors)
+loop:
 	for {
 		fmt.Println("Would you like to monitor a user or a repo? Please enter 1 for user, 2 for repo or 3 to exit")
 		var input int
 		fmt.Scanln(&input)
-		if input == 1 {
+		switch input {
+		case 1:
 			var user string
 			fmt.Println("Please enter their github username")
 			fmt.Scanln(&user)
-			go ListenForEvents(user, "", toPrint)
-		} else if input == 2 {
+			go ListenForEvents(user, "", toPrint, catchErrors)
+		case 2:
 			var owner string
 			fmt.Println("Please enter the github username of the owner of the repo")
 			fmt.Scanln(&owner)
 			var repoName string
 			fmt.Println("Please enter the name of the repo")
 			fmt.Scanln(&repoName)
-			go ListenForEvents(owner, repoName, toPrint)
-		} else if input == 3 {
-			break
-		} else {
+			go ListenForEvents(owner, repoName, toPrint, catchErrors)
+		case 3:
+			break loop
+		default:
 			fmt.Println("You entered something else, please try again")
+
 		}
 	}
-	fmt.Println("The commit/event count for each user is as follows:\n", activityMap)
+	if len(activityMap) != 0 {
+		fmt.Println("The commit/event count for each user is as follows:\n", activityMap)
+	}
 	fmt.Println("Exiting")
 }
